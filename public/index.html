@@ -1,0 +1,75 @@
+<html>
+    <head>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    </head>
+    <body>
+        <canvas id="chart"></canvas>
+        <script>
+            fetch('/api/datas').then(function(response) {
+                response.json().then(function(json) {
+                    console.log(json)
+
+                    const labels = json.map(d => d.date);
+                    const data = {
+                    labels: labels,
+                    datasets: [
+                        {
+                            type: 'line',
+                            label: 'Average price',
+                            backgroundColor: 'rgb(99, 132, 255)',
+                            borderColor: 'rgb(99, 132, 255)',
+                            data: json.map(d => d.average_price),
+                            yAxisID: 'y1',
+                        },
+                        {
+                            type: 'line',
+                            label: 'Floor price',
+                            backgroundColor: '#ccc',
+                            borderColor: '#ccc',
+                            data: json.map(d => d.floor_price),
+                            yAxisID: 'y1',
+                        },
+                        {
+                            type: 'bar',
+                            label: 'Volume',
+                            backgroundColor: 'rgb(255, 99, 132)',
+                            borderColor: 'rgb(255, 99, 132)',
+                            data: json.map(d => d.volume),
+                            yAxisID: 'y',
+                        }]
+                    };
+                    const config = {
+                        type: 'line',
+                        data: data,
+                        options: {
+                            elements: {
+                                point: {
+                                    radius: 0
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    type: 'linear',
+                                    display: true,
+                                    position: 'left',
+                                },
+                                y1: {
+                                    type: 'linear',
+                                    display: true,
+                                    position: 'right',
+                                    grid: {
+                                        drawOnChartArea: false,
+                                    },
+                                },
+                            }                            
+                        }
+                    };
+                    const myChart = new Chart(
+                        document.getElementById('chart'),
+                        config
+                    );                     
+                })               
+            });
+          </script>          
+    </body>
+</html>
