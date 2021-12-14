@@ -21,6 +21,8 @@ const NFTX_ALTERNATE_TOPIC0 = '0x1cdb5ee3c47e1a706ac452b89698e5e3f2ff4f835ca72dd
 const NFTX_TRANSFER_TOPIC0 = '0x63b13f6307f284441e029836b0c22eb91eb62a7ad555670061157930ce884f4e';
 const CARGO_TOPIC0 = '0x5535fa724c02f50c6fb4300412f937dbcdf655b0ebd4ecaca9a0d377d0c0d9cc';
 const RARIBLE_TOKEN_ID_MATCHER_TOPIC0 = '0xeb39ff9fa01427567623bcdf507c38c3661f0febd78123a35951895dc9ec7315';
+const PHUNK_MARKETPLACE_TOPIC0 = '0x975c7be5322a86cddffed1e3e0e55471a764ac2764d25176ceb8e17feef9392c';
+const TRANSFER_TOPIC0 = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 
 if (fs.existsSync('.env.local')) {
   dotenv.config({ path: '.env.local' });
@@ -71,32 +73,34 @@ async function work() {
         if (l.topics[0] === RARIBLE_TOPIC0
           || l.topics[0] === NFTX_TOPIC0
           || l.topics[0] === NFTX_ALTERNATE_TOPIC0
-          || l.topics[0] === CARGO_TOPIC0) {
+          || l.topics[0] === CARGO_TOPIC0
+          || l.topics[0] === PHUNK_MARKETPLACE_TOPIC0) {
           const txBlock = await web3.eth.getBlock(tr.blockNumber);
           txDate = new Date(parseInt(txBlock.timestamp.toString(), 10) * 1000);
         }
-
-        if (l.topics[0] === RARIBLE_TOPIC0) {
+        if (l.topics[0] === PHUNK_MARKETPLACE_TOPIC0) {
+          const data = l.data.substring(2);
+          const dataSlices = data.match(/.{1,64}/g);
+          const amount = parseInt(dataSlices[0], 16);
+          const tokenId = ev.returnValues.tokenId;
+          const targetOwner = ev.returnValues.to;
+          const sourceOwner = ev.returnValues.from;
+          const stmt = db.prepare('INSERT INTO sales VALUES (?,?,?,?,?,?,?)');
+          stmt.run(sourceOwner, targetOwner, tokenId, parseFloat(new BN(amount.toString()).toString()), txDate.toISOString(), ev.transactionHash, 'phunkmarket');
+          stmt.finalize();
+          console.log(`\n${txDate.toLocaleString()} - indexed a phunk market place sale for token #${tokenId} to 0x${targetOwner} for ${web3.utils.fromWei(amount.toString(), 'ether')}eth in tx ${tr.transactionHash}.`);
+        } else if (l.topics[0] === RARIBLE_TOPIC0) {
           // rarible
           // 1 -> to
           // 6 -> amount
           const data = l.data.substring(2);
           const dataSlices = data.match(/.{1,64}/g);
 
-          let tokenId = parseInt(dataSlices[11], 16);
+          const tokenId = ev.returnValues.tokenId;
           // TODO maybe find a better way to identify the proper slice
           if (dataSlices.length < 12) {
             // not the right data slice
             continue;
-          }
-
-          if (Number.isNaN(tokenId)) {
-            tokenId = tr.logs.filter((t) => {
-              if (t.topics[0] === RARIBLE_TOKEN_ID_MATCHER_TOPIC0) {
-                return true;
-              }
-              return false;
-            }).map((log) => parseInt(log.topics[2], 16))[0];
           }
 
           const targetOwner = dataSlices[1].replace(/^0+/, '');
@@ -135,6 +139,7 @@ async function work() {
             console.log('swap operation, skipping');
             break;
           }
+          // we should use the event directly for that
           const [tokenId, sourceOwner] = relevantTopic.map((log) => {
             const nftData = log.data.substring(2);
             const nftDataSlices = nftData.match(/.{1,64}/g);
