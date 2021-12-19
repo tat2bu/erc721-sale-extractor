@@ -1,4 +1,6 @@
 #!/usr/bin/env ts-node
+/* eslint-disable no-shadow */
+/* eslint-disable no-loop-func */
 /* eslint-disable prefer-destructuring */
 /* eslint-disable no-continue */
 /* eslint-disable no-restricted-syntax */
@@ -15,14 +17,14 @@ import dotenv from 'dotenv';
 
 /// Use this if you wanna force recreation the initial database
 const REGENERATE_FROM_SCRATCH = false;
+const CHUNK_SIZE = 2000;
 const RARIBLE_TOPIC0 = '0xcae9d16f553e92058883de29cb3135dbc0c1e31fd7eace79fef1d80577fe482e';
 const NFTX_TOPIC0 = '0xf7735c8cb2a65788ca663fc8415b7c6a66cd6847d58346d8334e8d52a599d3df';
 const NFTX_ALTERNATE_TOPIC0 = '0x1cdb5ee3c47e1a706ac452b89698e5e3f2ff4f835ca72dde8936d0f4fcf37d81';
 const NFTX_TRANSFER_TOPIC0 = '0x63b13f6307f284441e029836b0c22eb91eb62a7ad555670061157930ce884f4e';
 const CARGO_TOPIC0 = '0x5535fa724c02f50c6fb4300412f937dbcdf655b0ebd4ecaca9a0d377d0c0d9cc';
-const RARIBLE_TOKEN_ID_MATCHER_TOPIC0 = '0xeb39ff9fa01427567623bcdf507c38c3661f0febd78123a35951895dc9ec7315';
 const PHUNK_MARKETPLACE_TOPIC0 = '0x975c7be5322a86cddffed1e3e0e55471a764ac2764d25176ceb8e17feef9392c';
-const TRANSFER_TOPIC0 = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+const OPENSEA_SALE_TOPIC0 = '0xc4109843e0b7d514e4c093114b863f8e7d8d9a458c372cd51bfe526b588006c9';
 
 if (fs.existsSync('.env.local')) {
   dotenv.config({ path: '.env.local' });
@@ -32,12 +34,13 @@ if (fs.existsSync('.env.local')) {
 }
 
 const readFile = promisify(fs.readFile);
-let db = new Database(process.env.DATABASE_FILE);
+console.log(`opening database at ${process.env.WORK_DIRECTORY + process.env.DATABASE_FILE}`)
+let db = new Database(process.env.WORK_DIRECTORY + process.env.DATABASE_FILE);
 
 async function work() {
   await createDatabaseIfNeeded();
   if (REGENERATE_FROM_SCRATCH) {
-    fs.unlinkSync('last.txt');
+    fs.unlinkSync(`${process.env.WORK_DIRECTORY}last.txt`);
   }
   const abi = await readFile(process.env.TARGET_ABI_FILE);
   let last = retrieveCurrentBlockIndex();
@@ -49,45 +52,99 @@ async function work() {
     process.env.TARGET_CONTRACT,
   );
   console.log('starting from block', last);
-  const latest = await web3.eth.getBlockNumber();
+  let latest = await web3.eth.getBlockNumber();
   while (last < latest) {
     const block = await web3.eth.getBlock(last);
     const blockDate = new Date(parseInt(block.timestamp.toString(), 10) * 1000);
-    await sleep(1000);
+    await sleep(200);
     console.log(`\nretrieving events from block ${last} - ${blockDate.toISOString()}`);
+
     const events = await contract.getPastEvents('Transfer', {
       fromBlock: last,
-      toBlock: last + 200, // handle blocks by chunks
+      toBlock: last + CHUNK_SIZE, // handle blocks by chunks
     });
     console.log(`handling ${events.length} events...`);
     let lastEvent = null;
     for (const ev of events) {
       lastEvent = ev;
       process.stdout.write('.');
+
       last = ev.blockNumber;
-      fs.writeFileSync('last.txt', last.toString());
+      fs.writeFileSync(`${process.env.WORK_DIRECTORY}last.txt`, last.toString());
+
+      const rowExists = await new Promise((resolve) => {
+        db.get('SELECT * FROM events WHERE tx = ? AND log_index = ?', [ev.transactionHash, ev.logIndex], (err, row) => {
+          if (err) {
+            resolve(false);
+          }
+          resolve(row !== undefined);
+        });
+      });
+      if (rowExists) continue;
+
       const tr = await web3.eth.getTransactionReceipt(ev.transactionHash);
+      let saleFound = false;
+      const txBlock = await web3.eth.getBlock(tr.blockNumber);
+      const txDate = new Date(parseInt(txBlock.timestamp.toString(), 10) * 1000);
       for (const l of tr.logs) {
-        let txDate;
         // check matching element to get date
         if (l.topics[0] === RARIBLE_TOPIC0
           || l.topics[0] === NFTX_TOPIC0
           || l.topics[0] === NFTX_ALTERNATE_TOPIC0
           || l.topics[0] === CARGO_TOPIC0
-          || l.topics[0] === PHUNK_MARKETPLACE_TOPIC0) {
-          const txBlock = await web3.eth.getBlock(tr.blockNumber);
-          txDate = new Date(parseInt(txBlock.timestamp.toString(), 10) * 1000);
+          || l.topics[0] === PHUNK_MARKETPLACE_TOPIC0
+          || l.topics[0] === OPENSEA_SALE_TOPIC0) {
+          saleFound = true;
         }
-        if (l.topics[0] === PHUNK_MARKETPLACE_TOPIC0) {
+        if (l.topics[0] === OPENSEA_SALE_TOPIC0) {
+          const data = l.data.substring(2);
+          const dataSlices = data.match(/.{1,64}/g);
+          const amount = parseInt(dataSlices[2], 16);
+          const tokenId = ev.returnValues.tokenId;
+          const targetOwner = ev.returnValues.to;
+          const sourceOwner = ev.returnValues.from;
+          /*
+          db.run('DELETE FROM events WHERE tx = ? AND log_index = ?',
+          ev.transactionHash, ev.logIndex);
+          */
+          const rowExists = await new Promise((resolve) => {
+            db.get('SELECT * FROM events WHERE tx = ? AND log_index = ?', [ev.transactionHash, ev.logIndex], (err, row) => {
+              if (err) {
+                resolve(false);
+              }
+              resolve(row !== undefined);
+            });
+          });
+          if (!rowExists) {
+            console.log(ev.transactionHash, ev.logIndex);
+            const stmt = db.prepare('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)');
+            stmt.run('sale', sourceOwner, targetOwner, tokenId, parseFloat(new BN(amount.toString()).toString()), txDate.toISOString(), ev.transactionHash, ev.logIndex, 'opensea');
+            stmt.finalize();
+          } else {
+            console.log('already exist! we have to debug that!');
+          }
+          console.log(`\n${txDate.toLocaleString()} - indexed an opensea sale for token #${tokenId} to 0x${targetOwner} for ${web3.utils.fromWei(amount.toString(), 'ether')}eth in tx ${tr.transactionHash}.`);
+        } else if (l.topics[0] === PHUNK_MARKETPLACE_TOPIC0) {
           const data = l.data.substring(2);
           const dataSlices = data.match(/.{1,64}/g);
           const amount = parseInt(dataSlices[0], 16);
           const tokenId = ev.returnValues.tokenId;
           const targetOwner = ev.returnValues.to;
           const sourceOwner = ev.returnValues.from;
-          const stmt = db.prepare('INSERT INTO sales VALUES (?,?,?,?,?,?,?)');
-          stmt.run(sourceOwner, targetOwner, tokenId, parseFloat(new BN(amount.toString()).toString()), txDate.toISOString(), ev.transactionHash, 'phunkmarket');
-          stmt.finalize();
+
+          const rowExists = await new Promise((resolve) => {
+            db.get('SELECT * FROM events WHERE tx = ? AND log_index = ?', [ev.transactionHash, ev.logIndex], (err, row) => {
+              if (err) {
+                resolve(false);
+              }
+              resolve(row !== undefined);
+            });
+          });
+          if (!rowExists) {
+            const stmt = db.prepare('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)');
+            stmt.run('sale', sourceOwner, targetOwner, tokenId, parseFloat(new BN(amount.toString()).toString()), txDate.toISOString(), ev.transactionHash, ev.logIndex, 'phunkmarket');
+            stmt.finalize();
+          }
           console.log(`\n${txDate.toLocaleString()} - indexed a phunk market place sale for token #${tokenId} to 0x${targetOwner} for ${web3.utils.fromWei(amount.toString(), 'ether')}eth in tx ${tr.transactionHash}.`);
         } else if (l.topics[0] === RARIBLE_TOPIC0) {
           // rarible
@@ -95,7 +152,6 @@ async function work() {
           // 6 -> amount
           const data = l.data.substring(2);
           const dataSlices = data.match(/.{1,64}/g);
-
           const tokenId = ev.returnValues.tokenId;
           // TODO maybe find a better way to identify the proper slice
           if (dataSlices.length < 12) {
@@ -118,9 +174,20 @@ async function work() {
             const re = parseInt(nftDataSlices[6], 16);
             return re;
           }).reduce((previousValue, currentValue) => previousValue + currentValue, 0);
-          const stmt = db.prepare('INSERT INTO sales VALUES (?,?,?,?,?,?,?)');
-          stmt.run(sourceOwner, targetOwner, tokenId, parseFloat(new BN(amount.toString()).toString()), txDate.toISOString(), ev.transactionHash, 'rarible');
-          stmt.finalize();
+
+          const rowExists = await new Promise((resolve) => {
+            db.get('SELECT * FROM events WHERE tx = ? AND log_index = ?', [ev.transactionHash, ev.logIndex], (err, row) => {
+              if (err) {
+                resolve(false);
+              }
+              resolve(row !== undefined);
+            });
+          });
+          if (!rowExists) {
+            const stmt = db.prepare('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)');
+            stmt.run('sale', sourceOwner, targetOwner, tokenId, parseFloat(new BN(amount.toString()).toString()), txDate.toISOString(), ev.transactionHash, ev.logIndex, 'rarible');
+            stmt.finalize();
+          }
           console.log(`\n${txDate.toLocaleString()} - indexed a rarible sale to 0x${targetOwner} for ${web3.utils.fromWei(amount.toString(), 'ether')}eth in tx ${tr.transactionHash}.`);
           break;
         } else if (l.topics[0] === NFTX_TOPIC0
@@ -136,21 +203,28 @@ async function work() {
             return false;
           });
           if (relevantTopic.length === 0) {
-            console.log('swap operation, skipping');
+            console.log('\nswap operation, skipping');
             break;
           }
           // we should use the event directly for that
-          const [tokenId, sourceOwner] = relevantTopic.map((log) => {
-            const nftData = log.data.substring(2);
-            const nftDataSlices = nftData.match(/.{1,64}/g);
-            return [parseInt(nftDataSlices[4], 16), nftDataSlices[2].replace(/^0+/, '')];
-          })[0];
-
-          const targetOwner = dataSlices[2].replace(/^0+/, '');
+          const tokenId = ev.returnValues.tokenId;
+          const targetOwner = ev.returnValues.to;
+          const sourceOwner = ev.returnValues.from;
           const amount = parseInt(dataSlices[1], 16);
-          const stmt = db.prepare('INSERT INTO sales VALUES (?,?,?,?,?,?,?)');
-          stmt.run(sourceOwner, targetOwner, tokenId, parseFloat(new BN(amount.toString()).toString()), txDate.toISOString(), ev.transactionHash, 'nftx');
-          stmt.finalize();
+
+          const rowExists = await new Promise((resolve) => {
+            db.get('SELECT * FROM events WHERE tx = ? AND log_index = ?', [ev.transactionHash, ev.logIndex], (err, row) => {
+              if (err) {
+                resolve(false);
+              }
+              resolve(row !== undefined);
+            });
+          });
+          if (!rowExists) {
+            const stmt = db.prepare('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)');
+            stmt.run('sale', sourceOwner, targetOwner, tokenId, parseFloat(new BN(amount.toString()).toString()), txDate.toISOString(), ev.transactionHash, ev.logIndex, 'nftx');
+            stmt.finalize();
+          }
           console.log(`\n${txDate.toLocaleString()} - indexed a nftx sale to 0x${targetOwner} for ${web3.utils.fromWei(amount.toString(), 'ether')}eth in tx ${tr.transactionHash}.`);
           break;
         } else if (l.topics[0] === CARGO_TOPIC0) {
@@ -163,29 +237,66 @@ async function work() {
           const amount = parseInt(dataSlices[15], 16);
           const tokenId = parseInt(dataSlices[10], 16);
           const commission = parseInt(dataSlices[16], 16);
-          const stmt = db.prepare('INSERT INTO sales VALUES (?,?,?,?,?,?,?)');
+
           const amountFloat = new BN(amount.toString())
             .plus(new BN(commission.toString())).toNumber();
-          stmt.run(sourceOwner, targetOwner, tokenId, amountFloat, txDate.toISOString(), ev.transactionHash, 'cargo');
-          stmt.finalize();
+
+          const rowExists = await new Promise((resolve) => {
+            db.get('SELECT * FROM events WHERE tx = ? AND log_index = ?', [ev.transactionHash, ev.logIndex], (err, row) => {
+              if (err) {
+                resolve(false);
+              }
+              resolve(row !== undefined);
+            });
+          });
+          if (!rowExists) {
+            const stmt = db.prepare('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)');
+            stmt.run('sale', sourceOwner, targetOwner, tokenId, amountFloat, txDate.toISOString(), ev.transactionHash, ev.logIndex, 'cargo');
+            stmt.finalize();
+          }
 
           console.log(`\n${txDate.toLocaleString()} - indexed a cargo sale to 0x${targetOwner} for ${web3.utils.fromWei(amount.toString(), 'ether')}eth in tx ${tr.transactionHash}.`);
           break;
         }
       }
-    }
 
-    // prevent an infinite loop on an empty block
+      if (!saleFound) {
+        // no sale found, index a transfer event
+        const rowExists = await new Promise((resolve) => {
+          db.get('SELECT * FROM events WHERE tx = ? AND log_index = ?', [ev.transactionHash, ev.logIndex], (err, row) => {
+            if (err) {
+              resolve(false);
+            }
+            resolve(row !== undefined);
+          });
+        });
+        if (!rowExists) {
+          const stmt = db.prepare('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)');
+          stmt.run('transfer', ev.returnValues.from, ev.returnValues.to, ev.returnValues.tokenId, 0, txDate.toISOString(), ev.transactionHash, ev.logIndex, 'unknown');
+        }
+      }
+    } // end events loop
+
+    // prevent an infinite loop on an empty set of block
     if (lastEvent == null || last === lastEvent.blockNumber) {
-      last += 200;
+      last += CHUNK_SIZE;
+      if (last > latest) last = latest;
+    }
+    // console.log('\n last < latest', last, '<', latest, last < latest);
+    while (last >= latest) {
+      // wait for new blocks
+      await sleep(10000);
+      latest = await web3.eth.getBlockNumber();
+      console.log('\nwaiting for new blocks, last:', last, ', latest:', latest, '...');
     }
   }
+  console.log('\nended should tail now');
 }
 
 function retrieveCurrentBlockIndex():number {
   let last:number = 0;
   const startingBlock = parseInt(process.env.STARTING_BLOCK, 10);
-  if (fs.existsSync('last.txt')) { last = parseInt(fs.readFileSync('last.txt').toString(), 10); }
+  if (fs.existsSync(`${process.env.WORK_DIRECTORY}last.txt`)) { last = parseInt(fs.readFileSync(`${process.env.WORK_DIRECTORY}last.txt`).toString(), 10); }
   if (Number.isNaN(last) || last < startingBlock) last = startingBlock; // contract creation
   return last;
 }
@@ -212,7 +323,7 @@ function getWeb3Provider() {
 
 async function createDatabaseIfNeeded() {
   const tableExists = await new Promise((resolve) => {
-    db.get('SELECT name FROM sqlite_master WHERE type="table" AND name="sales"', [], (err, row) => {
+    db.get('SELECT name FROM sqlite_master WHERE type="table" AND name="events"', [], (err, row) => {
       if (err) {
         resolve(false);
       }
@@ -222,17 +333,23 @@ async function createDatabaseIfNeeded() {
   if (REGENERATE_FROM_SCRATCH || !tableExists) {
     console.log('Recreating database...');
     fs.unlinkSync(process.env.DATABASE_FILE);
-    db = new Database(process.env.DATABASE_FILE);
+    db = new Database(process.env.WORK_DIRECTORY + process.env.DATABASE_FILE);
     db.serialize(() => {
       console.log('create table');
       db.run(
-        'CREATE TABLE sales (from_wallet text, to_wallet text, token_id number, amount number, tx_date text, tx text, platform text);',
+        `CREATE TABLE events (
+          event_type text, from_wallet text, to_wallet text, 
+          token_id number, amount number, tx_date text, tx text, 
+          log_index number, platform text,
+          UNIQUE(tx, log_index)
+        );`,
       );
       console.log('create indexes');
-      db.run('CREATE INDEX idx_date ON sales(tx_date);');
-      db.run('CREATE INDEX idx_amount ON sales(amount);');
-      db.run('CREATE INDEX idx_platform ON sales(platform);');
-      db.run('CREATE INDEX idx_tx ON sales(tx);');
+      db.run('CREATE INDEX idx_type_date ON events(event_type, tx_date);');
+      db.run('CREATE INDEX idx_date ON events(tx_date);');
+      db.run('CREATE INDEX idx_amount ON events(amount);');
+      db.run('CREATE INDEX idx_platform ON events(platform);');
+      db.run('CREATE INDEX idx_tx ON events(tx);');
     });
     console.log('Database created...');
   }

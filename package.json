@@ -1,10 +1,17 @@
 {
   "name": "phunks-web3",
   "version": "1.0.0",
+  "engines": {
+    "node": "16.x"
+  },
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "serve": "node --max_old_space_size=64 --optimize_for_size -r ts-node/register server.js",
+    "worker-main": "node --max_old_space_size=128 --optimize_for_size -r ts-node/register main.ts",
+    "worker-bidsentered": "sleep 5 && node --max_old_space_size=128 --optimize_for_size -r ts-node/register bidsentered.ts",
+    "worker-bidswithdrawn": "sleep 5 && node --max_old_space_size=128 --optimize_for_size -r ts-node/register bidswithdrawal.ts",
+    "start": "concurrently npm:worker* npm:serve --restart-tries -1 --restart-after 5000"    
   },
   "author": "",
   "license": "ISC",
@@ -13,10 +20,13 @@
     "abi-decoder": "^2.4.0",
     "better-sqlite3": "^7.4.5",
     "bignumber.js": "^9.0.1",
+    "concurrently": "^6.5.0",
     "dotenv": "^10.0.0",
     "express": "^4.17.1",
     "sqlite": "^4.0.23",
     "sqlite3": "^5.0.2",
+    "ts-node": "^10.4.0",
+    "typescript": "^4.5.3",
     "web3": "^1.6.1"
   },
   "devDependencies": {
@@ -28,7 +38,6 @@
     "eslint-config-standard": "^16.0.3",
     "eslint-plugin-import": "^2.25.3",
     "eslint-plugin-node": "^11.1.0",
-    "eslint-plugin-promise": "^5.2.0",
-    "ts-node": "^10.4.0"
+    "eslint-plugin-promise": "^5.2.0"
   }
 }
