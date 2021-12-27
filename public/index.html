@@ -1,9 +1,44 @@
 <html>
     <head>
+        <title>Some cryptophunks NFT statistics</title>
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <style>
+            .container {
+                display: grid;
+                grid-template-columns: 2fr 1fr;
+                grid-gap: 2.5rem;
+            }      
+
+            body {
+                font-family: "Open Sans";
+                color: black;
+                padding: 20px;
+            }
+            h1 {
+                margin-bottom: 0;
+            }
+        </style>
+         <link rel="preconnect" href="https://fonts.googleapis.com">
+         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+         <link href="https://fonts.googleapis.com/css2?family=Open+Sans&display=swap" rel="stylesheet"> 
     </head>
     <body>
-        <canvas id="chart"></canvas>
+        <h1>Some cryptophunks NFT statistics</h1>
+        <p>I had some fun with CryptoPhunks NFT datas during their hackaton, I designed a pipeline to gather datas 
+            from this banned collection, this website is a sample that uses the API created to access the datas
+            scrapped by this pipeline. Raw datas are extracted directly from the blockchain, in a decentralized manner, 
+            the source code is available here: <br/>
+            <a href="https://github.com/tat2bu/erc721-sale-extractor" target="_blank">https://github.com/tat2bu/erc721-sale-extractor</a>.
+        </p> 
+        <div class="container">
+            <div>
+                <canvas id="chart"></canvas>
+            </div>
+            <div>
+                <canvas id="platform-chart"></canvas>
+            </div>
+
+        </div>
         <script>
             fetch('/api/datas').then(function(response) {
                 response.json().then(function(json) {
@@ -70,6 +105,42 @@
                     );                     
                 })               
             });
+            fetch('/api/platforms').then(function(response) {
+                response.json().then(function(json) {
+                    console.log(json)
+
+                    const labels = json.map(d => d.platform);
+                    const total = json.map(d => d.volume).reduce((prev,next) => prev+next, 0);
+                    const data = {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'Platform',
+                            data: json.map(d => d.volume),
+                            backgroundColor: ["#7463A8", "#80B7D8", "#AC39A0", "#B0C484", "#B75055"]
+                        }]
+                    };
+                    const config = {
+                        type: 'doughnut',
+                        data: data,
+                        options: {           
+                            plugins: {              
+                                title: {
+                                    display: true,
+                                    text: `Total volume: ${total.toFixed(2)}Ξ`
+                                },
+                                legend: {
+                                    position: 'bottom',
+                                },
+                            }            
+                        }
+                    };
+                    const myChart = new Chart(
+                        document.getElementById('platform-chart'),
+                        config
+                    );                     
+                })               
+            });            
           </script>          
     </body>
 </html>

@@ -5,6 +5,15 @@ const express = require('express');
 const app = express();
 const port = process.env.PORT || 3000;
 const Database = require('better-sqlite3');
+const fs = require('fs');
+const dotenv = require('dotenv');
+
+if (fs.existsSync('.env.local')) {
+  dotenv.config({ path: '.env.local' });
+} else {
+  console.warn('no .env.local find found, using default config');
+  dotenv.config();
+}
 
 const db = new Database(`${process.env.WORK_DIRECTORY || './'}db.db`, { verbose: console.log });
 
@@ -48,6 +57,20 @@ app.get('/api/datas', (req, res) => {
     group by date(tx_date)
     order by date(tx_date)
     `);
+  for (const entry of stmt.iterate()) {
+    results.push(entry);
+  }
+  res.status(200).json(results);
+});
+
+app.get('/api/platforms', (req, res) => {
+  const results = [];
+  const stmt = db.prepare(`select platform, 
+    sum(amount/1000000000000000000.0) volume
+    from events 
+    where event_type = 'sale' group by platform
+    order by sum(amount/1000000000000000000.0) desc
+  `);
   for (const entry of stmt.iterate()) {
     results.push(entry);
   }
