@@ -3,12 +3,18 @@
         <title>Some cryptophunks NFT statistics</title>
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
         <style>
-            .container {
+            #container {
                 display: grid;
-                grid-template-columns: 2fr 1fr;
+                grid-template-columns: 5fr 2fr;
                 grid-gap: 2.5rem;
-            }      
-
+                visibility: hidden;
+            }
+            #container > div {
+                align-self: center;
+            }
+            #loading {
+                font-weight: bold;
+            }
             body {
                 font-family: "Open Sans";
                 color: black;
@@ -30,7 +36,10 @@
             the source code is available here: <br/>
             <a href="https://github.com/tat2bu/erc721-sale-extractor" target="_blank">https://github.com/tat2bu/erc721-sale-extractor</a>.
         </p> 
-        <div class="container">
+        <div id="loading">
+            Loading, please wait, this sample is hosted on potatoes...
+        </div>
+        <div id="container">
             <div>
                 <canvas id="chart"></canvas>
             </div>
@@ -40,10 +49,14 @@
 
         </div>
         <script>
+            let loaded = 0;
             fetch('/api/datas').then(function(response) {
                 response.json().then(function(json) {
-                    console.log(json)
-
+                    loaded++;
+                    if (loaded == 2) {
+                        document.getElementById("container").style.visibility = "visible";
+                        document.getElementById("loading").style.display = "none";
+                    }
                     const labels = json.map(d => d.date);
                     const data = {
                     labels: labels,
@@ -107,7 +120,11 @@
             });
             fetch('/api/platforms').then(function(response) {
                 response.json().then(function(json) {
-                    console.log(json)
+                    loaded++;
+                    if (loaded == 2) {
+                        document.getElementById("container").style.visibility = "visible";
+                        document.getElementById("loading").style.display = "none";
+                    }
 
                     const labels = json.map(d => d.platform);
                     const total = json.map(d => d.volume).reduce((prev,next) => prev+next, 0);
@@ -117,7 +134,7 @@
                         {
                             label: 'Platform',
                             data: json.map(d => d.volume),
-                            backgroundColor: ["#7463A8", "#80B7D8", "#AC39A0", "#B0C484", "#B75055"]
+                            backgroundColor: ["#7463A8", "#80B7D8", "#AC39A0", "#B0C484", "#B75055", "#F12055"]
                         }]
                     };
                     const config = {
