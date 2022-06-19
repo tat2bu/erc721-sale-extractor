@@ -180,9 +180,13 @@ async function work() {
         let saleFound = false;
         const txBlock = await web3.eth.getBlock(tr.blockNumber);
         const txDate = new Date(parseInt(txBlock.timestamp.toString(), 10) * 1000);
-        if (ev.transactionHash === '0xfeff61888b796c9b289cd0e20a19deaac7da1fc9f47c5e3ba99a518166c60200') {
+        /*
+        if (ev.transactionHash === '0x0663ccbe64edd80b6b7f4acdda38c08c859d6bd8a586b980ff14f2940a97273b') {
           console.log('ok');
+        } else {
+          continue;
         }
+        */
         for (const l of tr.logs) {
           // check matching element to get date
           if (l.topics[0] === RARIBLE_TOPIC0
@@ -198,6 +202,9 @@ async function work() {
           }
           if (l.topics[0] === OPENSEA_SALE_TOPIC0
             || l.topics[0] === OPENSEA_BID_TOPIC0) {
+            if (l.logIndex !== ev.logIndex + 1) {
+              continue;
+            }
             const data = l.data.substring(2);
             const dataSlices = data.match(/.{1,64}/g);
             const amount = l.topics[0] === OPENSEA_BID_TOPIC0 ? BigInt(`0x${dataSlices[8]}`) / BigInt('1000000000000000') : BigInt(`0x${dataSlices[2]}`) / BigInt('1000000000000000');
@@ -209,7 +216,7 @@ async function work() {
             ev.transactionHash, ev.logIndex);
             */
             const rowExists = await new Promise((resolve) => {
-              db.get('SELECT * FROM events WHERE tx = ? AND log_index = ?', [ev.transactionHash, ev.logIndex], (err, row) => {
+              db.get('SELECT * FROM events WHERE tx = ? AND token_id = ?', [ev.transactionHash, ev.returnValues.tokenId], (err, row) => {
                 if (err) {
                   resolve(false);
                 }
@@ -221,11 +228,11 @@ async function work() {
               const stmt = db.prepare('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)');
               stmt.run('sale', sourceOwner, targetOwner, tokenId, parseFloat(new BN(amount.toString()).toString()), txDate.toISOString(), ev.transactionHash, ev.logIndex, 'opensea');
               stmt.finalize();
+              await saleHappened('opensea', amount, 'ETH', tokenId, ev.transactionHash);
             } else {
               console.log('already exist! we have to debug that!');
             }
             console.log(`\n${txDate.toLocaleString()} - indexed an opensea sale for token #${tokenId} to 0x${targetOwner} for ${web3.utils.fromWei(amount.toString(), 'ether')}eth in tx ${tr.transactionHash}.`);
-            await saleHappened('opensea', amount, 'ETH', tokenId, ev.transactionHash);
           } else if (l.topics[0] === LOOKSRARE_SALE_TOPIC0) {
             const data = l.data.substring(2);
             const dataSlices = data.match(/.{1,64}/g);
@@ -234,7 +241,7 @@ async function work() {
             const targetOwner = ev.returnValues.to.toLowerCase();
             const sourceOwner = ev.returnValues.from.toLowerCase();
             const rowExists = await new Promise((resolve) => {
-              db.get('SELECT * FROM events WHERE tx = ? AND log_index = ?', [ev.transactionHash, ev.logIndex], (err, row) => {
+              db.get('SELECT * FROM events WHERE tx = ? AND token_id = ?', [ev.transactionHash, ev.returnValues.tokenId], (err, row) => {
                 if (err) {
                   resolve(false);
                 }
@@ -245,9 +252,9 @@ async function work() {
               const stmt = db.prepare('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)');
               stmt.run('sale', sourceOwner, targetOwner, tokenId, amount.toString(), txDate.toISOString(), ev.transactionHash, ev.logIndex, 'looksrare');
               stmt.finalize();
+              await saleHappened('looksrare', amount, 'ETH', tokenId, ev.transactionHash);
             }
             console.log(`\n${txDate.toLocaleString()} - indexed a looksrare sale for token #${tokenId} to ${targetOwner} for ${web3.utils.fromWei(amount.toString(), 'ether')}eth in tx ${tr.transactionHash}.`);
-            await saleHappened('looksrare', amount, 'ETH', tokenId, ev.transactionHash);
           } else if (l.topics[0] === X2Y2_SALE_TOPIC0) {
             const data = l.data.substring(2);
             const dataSlices = data.match(/.{1,64}/g);
@@ -256,7 +263,7 @@ async function work() {
             const targetOwner = ev.returnValues.to.toLowerCase();
             const sourceOwner = ev.returnValues.from.toLowerCase();
             const rowExists = await new Promise((resolve) => {
-              db.get('SELECT * FROM events WHERE tx = ? AND log_index = ?', [ev.transactionHash, ev.logIndex], (err, row) => {
+              db.get('SELECT * FROM events WHERE tx = ? AND token_id = ?', [ev.transactionHash, ev.returnValues.tokenId], (err, row) => {
                 if (err) {
                   resolve(false);
                 }
@@ -267,9 +274,9 @@ async function work() {
               const stmt = db.prepare('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)');
               stmt.run('sale', sourceOwner, targetOwner, tokenId, amount.toString(), txDate.toISOString(), ev.transactionHash, ev.logIndex, 'x2y2');
               stmt.finalize();
+              await saleHappened('x2y2', amount, 'ETH', tokenId, ev.transactionHash);
             }
             console.log(`\n${txDate.toLocaleString()} - indexed a x2y2 sale for token #${tokenId} to ${targetOwner} for ${web3.utils.fromWei(amount.toString(), 'ether')}eth in tx ${tr.transactionHash}.`);
-            await saleHappened('x2y2', amount, 'ETH', tokenId, ev.transactionHash);
           } else if (l.topics[0] === PHUNK_MARKETPLACE_TOPIC0) {
             const data = l.data.substring(2);
             const dataSlices = data.match(/.{1,64}/g);
@@ -279,7 +286,7 @@ async function work() {
             const sourceOwner = ev.returnValues.from.toLowerCase();
 
             const rowExists = await new Promise((resolve) => {
-              db.get('SELECT * FROM events WHERE tx = ? AND log_index = ?', [ev.transactionHash, ev.logIndex], (err, row) => {
+              db.get('SELECT * FROM events WHERE tx = ? AND token_id = ?', [ev.transactionHash, ev.returnValues.tokenId], (err, row) => {
                 if (err) {
                   resolve(false);
                 }
@@ -290,9 +297,9 @@ async function work() {
               const stmt = db.prepare('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)');
               stmt.run('sale', sourceOwner, targetOwner, tokenId, parseFloat(new BN(amount.toString()).toString()), txDate.toISOString(), ev.transactionHash, ev.logIndex, 'phunkmarket');
               stmt.finalize();
+              await saleHappened('notlarvalab', amount, 'ETH', tokenId, ev.transactionHash);
             }
             console.log(`\n${txDate.toLocaleString()} - indexed a phunk market place sale for token #${tokenId} to ${targetOwner} for ${web3.utils.fromWei(amount.toString(), 'ether')}eth in tx ${tr.transactionHash}.`);
-            await saleHappened('notlarvalab', amount, 'ETH', tokenId, ev.transactionHash);
           } else if (l.topics[0] === RARIBLE_TOPIC0) {
             // rarible
             // 1 -> to
@@ -381,7 +388,10 @@ async function work() {
             const tokenId = ev.returnValues.tokenId;
             const targetOwner = ev.returnValues.to.toLowerCase();
             const sourceOwner = ev.returnValues.from.toLowerCase();
-            amount = BigInt(`0x${dataSlices[1]}`) / BigInt('1000000000000000') / BigInt(relevantTransferTopic.length);
+            amount = BigInt(`0x${dataSlices[1]}`) / BigInt('1000000000000000');
+            if (relevantTransferTopic.length > 0) {
+              amount /= BigInt(relevantTransferTopic.length);
+            }
 
             const rowExists = await new Promise((resolve) => {
               db.get('SELECT * FROM events WHERE tx = ? AND log_index = ?', [ev.transactionHash, ev.logIndex], (err, row) => {
@@ -395,9 +405,9 @@ async function work() {
               const stmt = db.prepare('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)');
               stmt.run('sale', sourceOwner, targetOwner, tokenId, parseFloat(new BN(amount.toString()).toString()), txDate.toISOString(), ev.transactionHash, ev.logIndex, 'nftx');
               stmt.finalize();
+              await saleHappened('nftx', amount, 'ETH', tokenId, ev.transactionHash);
             }
             console.log(`\n${txDate.toLocaleString()} - indexed a nftx sale to 0x${targetOwner} for ${web3.utils.fromWei(amount.toString(), 'ether')}eth in tx ${tr.transactionHash}.`);
-            await saleHappened('nftx', amount, 'ETH', tokenId, ev.transactionHash);
             break;
           } else if (l.topics[0] === CARGO_TOPIC0) {
             // cargo sale
@@ -425,10 +435,10 @@ async function work() {
               const stmt = db.prepare('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)');
               stmt.run('sale', sourceOwner, targetOwner, tokenId, amountFloat, txDate.toISOString(), ev.transactionHash, ev.logIndex, 'cargo');
               stmt.finalize();
+              await saleHappened('cargo', amount, 'ETH', tokenId.toString(), ev.transactionHash);
             }
 
             console.log(`\n${txDate.toLocaleString()} - indexed a cargo sale to 0x${targetOwner} for ${web3.utils.fromWei(amount.toString(), 'ether')}eth in tx ${tr.transactionHash}.`);
-            await saleHappened('cargo', amount, 'ETH', tokenId.toString(), ev.transactionHash);
             break;
           }
         }
@@ -449,7 +459,6 @@ async function work() {
           }
         }
       } // end events loop
-      const initialLast = last; // checking purpose
 
       // prevent an infinite loop on an empty set of block
       if (lastRequested === last) {
@@ -481,8 +490,8 @@ function retrieveCurrentBlockIndex():number {
   const startingBlock = parseInt(process.env.STARTING_BLOCK, 10);
   if (fs.existsSync(`${process.env.WORK_DIRECTORY}last.txt`)) { last = parseInt(fs.readFileSync(`${process.env.WORK_DIRECTORY}last.txt`).toString(), 10); }
   if (Number.isNaN(last) || last < startingBlock) last = startingBlock; // contract creation
-  // return last;
-  return 14401567;
+  // return 14751897;
+  return last;
 }
 
 function getWeb3Provider() {
@@ -551,7 +560,7 @@ async function saleHappened(
   const displayedAmount = Number(amount * 100n) / 100000;
   // TODO reuse uploaded media
   const mediaId = await twitterV1Client.v1.uploadMedia(`./token_images/phunk${nftId.padStart(4, '0')}.png`);
-  twitterV2Client.v2.tweet(`That's a phunk sale on ${marketplace} for ${displayedAmount}ETH, https://etherscan.io/tx/${tx}`, {
+  twitterV2Client.v2.tweet(`Phunk sale on ${marketplace} for ${displayedAmount}ETH, https://etherscan.io/tx/${tx}`, {
     media: {
       media_ids: [mediaId],
     },
