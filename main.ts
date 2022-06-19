@@ -14,11 +14,13 @@ import { promisify } from 'util';
 import fs from 'fs';
 import { Database } from 'sqlite3';
 import dotenv from 'dotenv';
-
+import { TwitterApi } from 'twitter-api-v2';
+import * as readline from 'readline';
 
 /// Use this if you wanna force recreation the initial database
 const REGENERATE_FROM_SCRATCH = false;
-const CHUNK_SIZE = 200; // lower this if geth node is hanging
+const CHUNK_SIZE = 500; // lower this if geth node is hanging
+const X2Y2_SALE_TOPIC0 = '0x3cbb63f144840e5b1b0a38a7c19211d2e89de4d7c5faf8b2d3c1776c302d1d33';
 const RARIBLE_TOPIC0 = '0xcae9d16f553e92058883de29cb3135dbc0c1e31fd7eace79fef1d80577fe482e';
 const NFTX_TOPIC0 = '0xf7735c8cb2a65788ca663fc8415b7c6a66cd6847d58346d8334e8d52a599d3df';
 const NFTX_ALTERNATE_TOPIC0 = '0x1cdb5ee3c47e1a706ac452b89698e5e3f2ff4f835ca72dde8936d0f4fcf37d81';
@@ -27,6 +29,7 @@ const NFTX_SELL_TOPIC0 = '0x1cdb5ee3c47e1a706ac452b89698e5e3f2ff4f835ca72dde8936
 const CARGO_TOPIC0 = '0x5535fa724c02f50c6fb4300412f937dbcdf655b0ebd4ecaca9a0d377d0c0d9cc';
 const PHUNK_MARKETPLACE_TOPIC0 = '0x975c7be5322a86cddffed1e3e0e55471a764ac2764d25176ceb8e17feef9392c';
 const OPENSEA_SALE_TOPIC0 = '0xc4109843e0b7d514e4c093114b863f8e7d8d9a458c372cd51bfe526b588006c9';
+const OPENSEA_BID_TOPIC0 = '0x9d9af8e38d66c62e2c12f0225249fd9d721c54b83f48d9352c97c6cacdcb6f31';
 const LOOKSRARE_SALE_TOPIC0 = '0x95fb6205e23ff6bda16a2d1dba56b9ad7c783f67c96fa149785052f47696f2be';
 
 if (fs.existsSync('.env.local')) {
@@ -36,11 +39,99 @@ if (fs.existsSync('.env.local')) {
   dotenv.config();
 }
 
+let twitterV1Client:TwitterApi;
+let twitterV2Client:TwitterApi;
 const readFile = promisify(fs.readFile);
 console.log(`opening database at ${process.env.WORK_DIRECTORY + process.env.DATABASE_FILE}`);
 let db = new Database(process.env.WORK_DIRECTORY + process.env.DATABASE_FILE);
 
+async function getAuthenticatedV2TwitterClient() {
+  let twitterClient = new TwitterApi({
+    clientId: process.env.TWITTER_CLIENT_ID,
+    clientSecret: process.env.TWITTER_CLIENT_SECRET,
+  });
+  if (fs.existsSync('refreshToken.txt')) {
+    const persistedRefreshToken = fs.readFileSync('refreshToken.txt').toString();
+    const {
+      client,
+      refreshToken,
+    } = await twitterClient.refreshOAuth2Token(persistedRefreshToken);
+    fs.writeFileSync('refreshToken.txt', refreshToken);
+    twitterClient = client;
+  } else {
+    const { url, codeVerifier } = twitterClient.generateOAuth2AuthLink('http://localhost', { scope: ['tweet.read', 'tweet.write', 'users.read', 'offline.access'] });
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    const answer:string = await new Promise((resolve) => {
+      rl.question(`Lead to ${url}, then enter the code you'll receive in the callback URL: `, resolve);
+    });
+    await new Promise<void>((resolve) => {
+      twitterClient = new TwitterApi({
+        clientId: process.env.TWITTER_CLIENT_ID,
+        clientSecret: process.env.TWITTER_CLIENT_SECRET,
+      });
+      twitterClient.loginWithOAuth2({ code: answer, codeVerifier, redirectUri: 'http://localhost' })
+        .then(async ({
+          client: loggedClient, refreshToken,
+        }) => {
+          fs.writeFileSync('refreshToken.txt', refreshToken);
+          twitterClient = loggedClient;
+          resolve();
+        }).catch((err) => console.error(err));
+    });
+  }
+  return twitterClient;
+}
+
+async function getAuthenticatedV1TwitterClient() {
+  let twitterClient:TwitterApi;
+
+  twitterClient = new TwitterApi({
+    appKey: process.env.TWITTER_ACCESS_TOKEN,
+    appSecret: process.env.TWITTER_TOKEN_SECRET,
+  });
+  const authLink = await twitterClient.generateAuthLink();
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  const answer:string = await new Promise((resolve) => {
+    rl.question(`Lead to ${authLink.url}, then enter the the code received: `, resolve);
+  });
+  await new Promise<void>((resolve) => {
+    twitterClient = new TwitterApi({
+      appKey: process.env.TWITTER_ACCESS_TOKEN,
+      appSecret: process.env.TWITTER_TOKEN_SECRET,
+      accessToken: authLink.oauth_token,
+      accessSecret: authLink.oauth_token_secret,
+    });
+    twitterClient.login(answer)
+      .then(async ({ client: loggedClient, accessToken, accessSecret }) => {
+        fs.writeFileSync('twitter-tokens.txt', JSON.stringify({
+          accessToken,
+          accessSecret,
+          tokenSecret: authLink.oauth_token_secret,
+        }));
+        twitterClient = loggedClient;
+        resolve();
+      }).catch((err) => console.error(err));
+  });
+
+  return twitterClient;
+}
+
 async function work() {
+  if (process.env.POST_ON_TWITTER === 'true') {
+    twitterV2Client = await getAuthenticatedV2TwitterClient();
+    if (process.env.HAS_ELEVATED_TWITTER_API_ACCESS === 'true') {
+      twitterV1Client = twitterV2Client;
+    } else {
+      twitterV1Client = await getAuthenticatedV1TwitterClient();
+    }
+  }
+
   await createDatabaseIfNeeded();
   if (REGENERATE_FROM_SCRATCH) {
     fs.unlinkSync(`${process.env.WORK_DIRECTORY}last.txt`);
@@ -89,6 +180,9 @@ async function work() {
         let saleFound = false;
         const txBlock = await web3.eth.getBlock(tr.blockNumber);
         const txDate = new Date(parseInt(txBlock.timestamp.toString(), 10) * 1000);
+        if (ev.transactionHash === '0xfeff61888b796c9b289cd0e20a19deaac7da1fc9f47c5e3ba99a518166c60200') {
+          console.log('ok');
+        }
         for (const l of tr.logs) {
           // check matching element to get date
           if (l.topics[0] === RARIBLE_TOPIC0
@@ -97,13 +191,16 @@ async function work() {
             || l.topics[0] === CARGO_TOPIC0
             || l.topics[0] === PHUNK_MARKETPLACE_TOPIC0
             || l.topics[0] === OPENSEA_SALE_TOPIC0
-            || l.topics[0] === LOOKSRARE_SALE_TOPIC0) {
+            || l.topics[0] === OPENSEA_BID_TOPIC0
+            || l.topics[0] === LOOKSRARE_SALE_TOPIC0
+            || l.topics[0] === X2Y2_SALE_TOPIC0) {
             saleFound = true;
           }
-          if (l.topics[0] === OPENSEA_SALE_TOPIC0) {
+          if (l.topics[0] === OPENSEA_SALE_TOPIC0
+            || l.topics[0] === OPENSEA_BID_TOPIC0) {
             const data = l.data.substring(2);
             const dataSlices = data.match(/.{1,64}/g);
-            const amount = parseInt(dataSlices[2], 16);
+            const amount = l.topics[0] === OPENSEA_BID_TOPIC0 ? BigInt(`0x${dataSlices[8]}`) / BigInt('1000000000000000') : BigInt(`0x${dataSlices[2]}`) / BigInt('1000000000000000');
             const tokenId = ev.returnValues.tokenId;
             const targetOwner = ev.returnValues.to.toLowerCase();
             const sourceOwner = ev.returnValues.from.toLowerCase();
@@ -128,10 +225,11 @@ async function work() {
               console.log('already exist! we have to debug that!');
             }
             console.log(`\n${txDate.toLocaleString()} - indexed an opensea sale for token #${tokenId} to 0x${targetOwner} for ${web3.utils.fromWei(amount.toString(), 'ether')}eth in tx ${tr.transactionHash}.`);
+            await saleHappened('opensea', amount, 'ETH', tokenId, ev.transactionHash);
           } else if (l.topics[0] === LOOKSRARE_SALE_TOPIC0) {
             const data = l.data.substring(2);
             const dataSlices = data.match(/.{1,64}/g);
-            const amount = parseInt(dataSlices[6], 16);
+            const amount = BigInt(`0x${dataSlices[6]}`) / BigInt('1000000000000000');
             const tokenId = ev.returnValues.tokenId;
             const targetOwner = ev.returnValues.to.toLowerCase();
             const sourceOwner = ev.returnValues.from.toLowerCase();
@@ -145,14 +243,37 @@ async function work() {
             });
             if (!rowExists) {
               const stmt = db.prepare('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)');
-              stmt.run('sale', sourceOwner, targetOwner, tokenId, parseFloat(new BN(amount.toString()).toString()), txDate.toISOString(), ev.transactionHash, ev.logIndex, 'looksrare');
+              stmt.run('sale', sourceOwner, targetOwner, tokenId, amount.toString(), txDate.toISOString(), ev.transactionHash, ev.logIndex, 'looksrare');
               stmt.finalize();
             }
-            console.log(`\n${txDate.toLocaleString()} - indexed a looksrare sale for token #${tokenId} to ${targetOwner} for ${web3.utils.fromWei(amount.toString(), 'ether')}eth in tx ${tr.transactionHash}.`);            
+            console.log(`\n${txDate.toLocaleString()} - indexed a looksrare sale for token #${tokenId} to ${targetOwner} for ${web3.utils.fromWei(amount.toString(), 'ether')}eth in tx ${tr.transactionHash}.`);
+            await saleHappened('looksrare', amount, 'ETH', tokenId, ev.transactionHash);
+          } else if (l.topics[0] === X2Y2_SALE_TOPIC0) {
+            const data = l.data.substring(2);
+            const dataSlices = data.match(/.{1,64}/g);
+            const amount = BigInt(`0x${dataSlices[12]}`) / BigInt('1000000000000000');
+            const tokenId = ev.returnValues.tokenId;
+            const targetOwner = ev.returnValues.to.toLowerCase();
+            const sourceOwner = ev.returnValues.from.toLowerCase();
+            const rowExists = await new Promise((resolve) => {
+              db.get('SELECT * FROM events WHERE tx = ? AND log_index = ?', [ev.transactionHash, ev.logIndex], (err, row) => {
+                if (err) {
+                  resolve(false);
+                }
+                resolve(row !== undefined);
+              });
+            });
+            if (!rowExists) {
+              const stmt = db.prepare('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)');
+              stmt.run('sale', sourceOwner, targetOwner, tokenId, amount.toString(), txDate.toISOString(), ev.transactionHash, ev.logIndex, 'x2y2');
+              stmt.finalize();
+            }
+            console.log(`\n${txDate.toLocaleString()} - indexed a x2y2 sale for token #${tokenId} to ${targetOwner} for ${web3.utils.fromWei(amount.toString(), 'ether')}eth in tx ${tr.transactionHash}.`);
+            await saleHappened('x2y2', amount, 'ETH', tokenId, ev.transactionHash);
           } else if (l.topics[0] === PHUNK_MARKETPLACE_TOPIC0) {
             const data = l.data.substring(2);
             const dataSlices = data.match(/.{1,64}/g);
-            const amount = parseInt(dataSlices[0], 16);
+            const amount = BigInt(`0x${dataSlices[0]}`) / BigInt('1000000000000000');
             const tokenId = ev.returnValues.tokenId;
             const targetOwner = ev.returnValues.to.toLowerCase();
             const sourceOwner = ev.returnValues.from.toLowerCase();
@@ -171,6 +292,7 @@ async function work() {
               stmt.finalize();
             }
             console.log(`\n${txDate.toLocaleString()} - indexed a phunk market place sale for token #${tokenId} to ${targetOwner} for ${web3.utils.fromWei(amount.toString(), 'ether')}eth in tx ${tr.transactionHash}.`);
+            await saleHappened('notlarvalab', amount, 'ETH', tokenId, ev.transactionHash);
           } else if (l.topics[0] === RARIBLE_TOPIC0) {
             // rarible
             // 1 -> to
@@ -196,9 +318,9 @@ async function work() {
             }).map((log) => {
               const nftData = log.data.substring(2);
               const nftDataSlices = nftData.match(/.{1,64}/g);
-              const re = parseInt(nftDataSlices[6], 16);
+              const re = BigInt(`0x${nftDataSlices[6]}`) / BigInt('1000000000000000');
               return re;
-            }).reduce((previousValue, currentValue) => previousValue + currentValue, 0);
+            }).reduce((previousValue, currentValue) => previousValue + currentValue, BigInt(0));
 
             const rowExists = await new Promise((resolve) => {
               db.get('SELECT * FROM events WHERE tx = ? AND log_index = ?', [ev.transactionHash, ev.logIndex], (err, row) => {
@@ -214,6 +336,7 @@ async function work() {
               stmt.finalize();
             }
             console.log(`\n${txDate.toLocaleString()} - indexed a rarible sale to ${targetOwner} for ${web3.utils.fromWei(amount.toString(), 'ether')}eth in tx ${tr.transactionHash}.`);
+            await saleHappened('rarible', amount, 'ETH', tokenId, ev.transactionHash);
             break;
           } else if (l.topics[0] === NFTX_TOPIC0
             || l.topics[0] === NFTX_ALTERNATE_TOPIC0) {
@@ -227,7 +350,7 @@ async function work() {
               }
               return false;
             });
-            let amount = -1;
+            let amount = BigInt('-1');
             if (relevantTopic.length === 0) {
               console.log('\nswap operation, skipping, finding amount elsewhere');
               relevantTopic = tr.logs.filter((t) => {
@@ -242,13 +365,23 @@ async function work() {
               }
               const relevantData = relevantTopic[0].data.substring(2);
               const relevantDataSlice = relevantData.match(/.{1,64}/g);
-              amount = parseInt(relevantDataSlice[1], 16);
+              amount = BigInt(`0x${relevantDataSlice[1]}`) / BigInt('1000000000000000');
             }
+
+            // find the number of token transferred to adjust amount per token
+            const relevantTransferTopic = tr.logs.filter((t) => {
+              if (t.topics[0] === '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
+                && t.topics[1] === '0x000000000000000000000000b39185e33e8c28e0bb3dbbce24da5dea6379ae91') {
+                return true;
+              }
+              return false;
+            });
+
             // we should use the event directly for that
             const tokenId = ev.returnValues.tokenId;
             const targetOwner = ev.returnValues.to.toLowerCase();
             const sourceOwner = ev.returnValues.from.toLowerCase();
-            amount = parseInt(dataSlices[1], 16);
+            amount = BigInt(`0x${dataSlices[1]}`) / BigInt('1000000000000000') / BigInt(relevantTransferTopic.length);
 
             const rowExists = await new Promise((resolve) => {
               db.get('SELECT * FROM events WHERE tx = ? AND log_index = ?', [ev.transactionHash, ev.logIndex], (err, row) => {
@@ -264,6 +397,7 @@ async function work() {
               stmt.finalize();
             }
             console.log(`\n${txDate.toLocaleString()} - indexed a nftx sale to 0x${targetOwner} for ${web3.utils.fromWei(amount.toString(), 'ether')}eth in tx ${tr.transactionHash}.`);
+            await saleHappened('nftx', amount, 'ETH', tokenId, ev.transactionHash);
             break;
           } else if (l.topics[0] === CARGO_TOPIC0) {
             // cargo sale
@@ -272,7 +406,7 @@ async function work() {
 
             const sourceOwner = dataSlices[12].replace(/^0+/, '').toLowerCase();
             const targetOwner = `0x${dataSlices[0].replace(/^0+/, '')}`.toLowerCase();
-            const amount = parseInt(dataSlices[15], 16);
+            const amount = BigInt(`0x${dataSlices[15]}`) / BigInt('1000000000000000');
             const tokenId = parseInt(dataSlices[10], 16);
             const commission = parseInt(dataSlices[16], 16);
 
@@ -294,6 +428,7 @@ async function work() {
             }
 
             console.log(`\n${txDate.toLocaleString()} - indexed a cargo sale to 0x${targetOwner} for ${web3.utils.fromWei(amount.toString(), 'ether')}eth in tx ${tr.transactionHash}.`);
+            await saleHappened('cargo', amount, 'ETH', tokenId.toString(), ev.transactionHash);
             break;
           }
         }
@@ -328,9 +463,12 @@ async function work() {
         latest = await web3.eth.getBlockNumber();
         console.log('\nwaiting for new blocks, last:', last, ', latest:', latest, '...');
       }
+      /*
+      // that's for debugging purpose
       if (initialLast !== last) {
         console.log('!!! last is now', last, initialLast);
       }
+      */
     } catch (err) {
       console.log('error received, will try to continue', err);
     }
@@ -343,7 +481,8 @@ function retrieveCurrentBlockIndex():number {
   const startingBlock = parseInt(process.env.STARTING_BLOCK, 10);
   if (fs.existsSync(`${process.env.WORK_DIRECTORY}last.txt`)) { last = parseInt(fs.readFileSync(`${process.env.WORK_DIRECTORY}last.txt`).toString(), 10); }
   if (Number.isNaN(last) || last < startingBlock) last = startingBlock; // contract creation
-  return last;
+  // return last;
+  return 14401567;
 }
 
 function getWeb3Provider() {
@@ -391,6 +530,7 @@ async function createDatabaseIfNeeded() {
       );
       console.log('create indexes');
       db.run('CREATE INDEX idx_type_date ON events(event_type, tx_date);');
+      db.run('CREATE INDEX idx_type_platform_date ON events(event_type, platform, tx_date);');
       db.run('CREATE INDEX idx_date ON events(tx_date);');
       db.run('CREATE INDEX idx_amount ON events(amount);');
       db.run('CREATE INDEX idx_platform ON events(platform);');
@@ -398,6 +538,24 @@ async function createDatabaseIfNeeded() {
     });
     console.log('Database created...');
   }
+}
+
+async function saleHappened(
+  marketplace:string,
+  amount:bigint,
+  token:string,
+  nftId:string,
+  tx:string,
+) {
+  console.log('saleHappened', marketplace, amount, token, nftId);
+  const displayedAmount = Number(amount * 100n) / 100000;
+  // TODO reuse uploaded media
+  const mediaId = await twitterV1Client.v1.uploadMedia(`./token_images/phunk${nftId.padStart(4, '0')}.png`);
+  twitterV2Client.v2.tweet(`That's a phunk sale on ${marketplace} for ${displayedAmount}ETH, https://etherscan.io/tx/${tx}`, {
+    media: {
+      media_ids: [mediaId],
+    },
+  });
 }
 
 async function sleep(msec:number) {

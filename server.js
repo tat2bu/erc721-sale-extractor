@@ -8,6 +8,8 @@ const Database = require('better-sqlite3');
 const fs = require('fs');
 const dotenv = require('dotenv');
 
+process.title = 'phunks-webapi';
+
 if (fs.existsSync('.env.local')) {
   dotenv.config({ path: '.env.local' });
 } else {
@@ -42,21 +44,36 @@ app.get('/api/latest', (req, res) => {
 });
 app.get('/api/datas', (req, res) => {
   const results = [];
-  const stmt = db.prepare(`select 
-        date(tx_date) date, 
-        sum(amount/1000000000000000000.0) volume, 
-        avg(amount/1000000000000000000.0) average_price, 
-        (select avg(amount/1000000000000000000.0) from (select * from events
-          where event_type == 'sale'
-          and date(tx_date) = date(ev.tx_date)
-          order by amount 
-          limit 10)) floor_price,
-        count(*) sales
+  let { exclusions } = req.query;
+  if (typeof exclusions === 'string') exclusions = [exclusions];
+  if (!exclusions) exclusions = [];
+  exclusions = exclusions.filter((s) => s === 'looksrare'
+    || s === 'rarible'
+    || s === 'nftx'
+    || s === 'cargo'
+    || s === 'phunkmarket'
+    || s === 'opensea');
+  const exclusionsSQL = exclusions.length > 0 ? `and platform not in (
+    '${exclusions.join('\',\'')}'
+  )` : '';
+  const sql = `select 
+      date(tx_date) date, 
+      sum(amount/1000.0) volume, 
+      avg(amount/1000.0) average_price, 
+      (select avg(amount/1000.0) from (select * from events
+        where event_type == 'sale'
+        and date(tx_date) = date(ev.tx_date)
+        order by amount 
+        limit 5)) floor_price,
+      count(*) sales
     from events ev
     where event_type == 'sale'
+    ${exclusionsSQL}
     group by date(tx_date)
     order by date(tx_date)
-    `);
+  `;
+  console.log(sql);
+  const stmt = db.prepare(sql);
   for (const entry of stmt.iterate()) {
     results.push(entry);
   }
@@ -66,10 +83,10 @@ app.get('/api/datas', (req, res) => {
 app.get('/api/platforms', (req, res) => {
   const results = [];
   const stmt = db.prepare(`select platform, 
-    sum(amount/1000000000000000000.0) volume
+    sum(amount)/1000.0 volume
     from events 
     where event_type = 'sale' group by platform
-    order by sum(amount/1000000000000000000.0) desc
+    order by sum(amount) desc
   `);
   for (const entry of stmt.iterate()) {
     results.push(entry);

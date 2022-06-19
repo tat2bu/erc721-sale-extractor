@@ -7,11 +7,13 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "stop": "kill -2 $(cat pid.pid) && pkill --signal 15 phunks-*",
     "serve": "node --max_old_space_size=64 --optimize_for_size -r ts-node/register server.js",
     "worker-main": "node --max_old_space_size=128 --optimize_for_size -r ts-node/register main.ts",
     "worker-bidsentered": "sleep 5 && node --max_old_space_size=128 --optimize_for_size -r ts-node/register bidsentered.ts",
     "worker-bidswithdrawn": "sleep 5 && node --max_old_space_size=128 --optimize_for_size -r ts-node/register bidswithdrawal.ts",
-    "start": "concurrently npm:worker* npm:serve --restart-tries -1 --restart-after 5000"    
+    "start": "concurrently npm:worker* npm:serve --restart-tries -1 --restart-after 5000",
+    "daemon": "concurrently npm:worker* npm:serve --restart-tries -1 --restart-after 5000 &> ../daemon.log & echo $! > pid.pid && echo pid is $(cat pid.pid)"
   },
   "author": "",
   "license": "ISC",
@@ -20,16 +22,20 @@
     "abi-decoder": "^2.4.0",
     "better-sqlite3": "^7.4.5",
     "bignumber.js": "^9.0.1",
+    "bluebird": "^3.7.2",
     "concurrently": "^6.5.0",
     "dotenv": "^10.0.0",
     "express": "^4.17.1",
     "sqlite": "^4.0.23",
     "sqlite3": "^5.0.2",
     "ts-node": "^10.4.0",
+    "twitter-api-v2": "^1.12.2",
     "typescript": "^4.5.3",
     "web3": "^1.6.1"
   },
   "devDependencies": {
+    "@types/bluebird": "^3.5.36",
+    "@types/node": "^18.0.0",
     "@types/sqlite3": "^3.1.7",
     "@typescript-eslint/eslint-plugin": "^5.6.0",
     "@typescript-eslint/parser": "^5.6.0",
